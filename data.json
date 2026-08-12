@@ -1,5 +1,5 @@
 {
-  "axes": {
+  "dimensions": {
     "lean": {
       "label": "political lean",
       "axis_title": "political lean  (− left · right +)",
@@ -20,12 +20,27 @@
       "hint": "0 none ↔ 10 total",
       "min": 0,
       "max": 10
+    },
+    "moral": {
+      "label": "moral bankruptcy",
+      "axis_title": "moral bankruptcy  (0 upstanding · 10 bankrupt)",
+      "hint": "0 upstanding ↔ 10 bankrupt",
+      "min": 0,
+      "max": 10
+    },
+    "intel": {
+      "label": "intelligence",
+      "axis_title": "intelligence  (0 dim · 10 brilliant)",
+      "hint": "0 dim ↔ 10 brilliant",
+      "min": 0,
+      "max": 10
     }
   },
+  "axes": { "x": "lean", "y": "goon", "z": "prude" },
   "entities": [
-    { "name": "Bluesky", "slot": 0, "lean": -8.0, "goon": 7.5, "prude": 2.0 },
-    { "name": "X",       "slot": 1, "lean":  7.0, "goon": 9.0, "prude": 1.5 },
-    { "name": "TikTok",  "slot": 2, "lean":  4.0, "goon": 4.5, "prude": 8.5 },
-    { "name": "Tumblr",  "slot": 3, "lean": -8.0, "goon": 7.0, "prude": 7.5 }
+    { "name": "Bluesky", "slot": 0, "lean": -8.0, "goon": 7.5, "prude": 2.0, "moral": 3.0, "intel": 6.0 },
+    { "name": "X",       "slot": 1, "lean":  7.0, "goon": 9.0, "prude": 1.5, "moral": 9.0, "intel": 4.0 },
+    { "name": "TikTok",  "slot": 2, "lean":  4.0, "goon": 4.5, "prude": 8.5, "moral": 7.5, "intel": 5.0 },
+    { "name": "Tumblr",  "slot": 3, "lean": -8.0, "goon": 7.0, "prude": 7.5, "moral": 3.5, "intel": 7.0 }
   ]
 }

@@ -25,10 +25,30 @@ from typing import Any
 import plotly.utils
 from plotly.offline import get_plotlyjs, get_plotlyjs_version
 
-from chart import AXIS_KEYS, GRAPH_CONFIG, build_figure, load_data, normalize, trace_templates
+from chart import (
+    GRAPH_CONFIG,
+    axis_specs,
+    base_layout,
+    load_data,
+    normalize,
+    normalize_axes,
+    trace_templates,
+)
 from palette import MAX_SLOTS, SERIES, SYMBOLS, THEMES, css
 
 THEME_NAMES = ("light", "dark")
+
+
+def table_caption(dimensions: dict[str, Any]) -> str:
+    """One line describing the scales, without repeating them per column."""
+    bipolar = [spec["label"] for spec in dimensions.values() if spec["min"] < 0]
+    if not bipolar:
+        return "Every dimension runs 0–10."
+    return (
+        "Every dimension runs 0–10 except "
+        + ", ".join(bipolar)
+        + ", which runs −10 to +10."
+    )
 
 PAGE = Template("""<!doctype html>
 <html lang="en">
@@ -65,6 +85,21 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--muted); out
 .seg label { padding: 5px 11px; border-radius: 6px; cursor: pointer; color: var(--text-secondary);
   display: inline-flex; align-items: center; gap: 6px; }
 .seg input { margin: 0; accent-color: var(--text-secondary); }
+
+/* Axis pickers sit in their own row directly above the plot they re-map. */
+.axes-row { gap: 10px; }
+.axes-label { font-size: 13px; color: var(--text-secondary); }
+.axis-pick { display: inline-flex; align-items: center; gap: 7px; }
+.role { display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; border-radius: 5px; font-size: 11px; font-weight: 600;
+  color: var(--text-secondary); background: var(--grid); }
+select {
+  font: inherit; font-size: 13px; padding: 6px 10px; cursor: pointer;
+  color: var(--text-primary); background: var(--surface);
+  border: 1px solid var(--border); border-radius: 8px;
+}
+select:hover { border-color: var(--muted); }
+select:focus-visible { outline: 2px solid var(--muted); outline-offset: 2px; }
 
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
   padding: 8px; margin-bottom: 28px; overflow-x: auto; }
@@ -151,6 +186,13 @@ footer a { color: var(--text-secondary); }
     <button id="download" type="button">Download JSON</button>
   </div>
 
+  <div class="controls axes-row">
+    <span class="axes-label">Axes</span>
+    <label class="axis-pick"><span class="role">X</span><select id="axis-x"></select></label>
+    <label class="axis-pick"><span class="role">Y</span><select id="axis-y"></select></label>
+    <label class="axis-pick"><span class="role">Z</span><select id="axis-z"></select></label>
+  </div>
+
   <div class="card"><div id="chart"></div></div>
 
   <h2>Values</h2>
@@ -171,16 +213,20 @@ footer a { color: var(--text-secondary); }
 (function () {
   "use strict";
 
-  var AXES = ${axes};
-  var AXIS_KEYS = ${axis_keys};
+  var DIMENSIONS = ${dimensions};
+  var DIM_KEYS = ${dim_keys};
+  var DEFAULT_AXES = ${default_axes};
   var DEFAULTS = ${defaults};
   var SERIES = ${series};
   var SYMBOLS = ${symbols};
   var OVERFLOW = ${overflow};
   var MAX_SLOTS = ${max_slots};
-  var LAYOUTS = ${layouts};
+  var BASE_LAYOUTS = ${base_layouts};
+  var AXIS_SPECS = ${axis_specs};
   var TEMPLATES = ${templates};
   var CONFIG = ${config};
+  var TABLE_CAPTION = ${table_caption};
+  var ROLES = ["x", "y", "z"];
   var STORE_KEY = "three-axis-chart";
 
   var gd = document.getElementById("chart");
@@ -190,7 +236,7 @@ footer a { color: var(--text-secondary); }
   var spinBox = document.getElementById("spin");
   var stemsBox = document.getElementById("stems");
 
-  var state = { entities: [], theme: null, stems: true };
+  var state = { entities: [], axes: null, theme: null, stems: true };
   var spinTimer = null;
 
   // ---------------------------------------------------------------- helpers
@@ -266,8 +312,10 @@ footer a { color: var(--text-secondary); }
       if (!(slot >= 0) || slot > MAX_SLOTS || seen[slot]) { slot = index; }
       seen[slot] = true;
       var entity = { name: cleanName(raw && raw.name, "Series " + (slot + 1)), slot: slot };
-      AXIS_KEYS.forEach(function (axis) {
-        entity[axis] = clamp(raw && raw[axis], AXES[axis].min, AXES[axis].max);
+      DIM_KEYS.forEach(function (key) {
+        var spec = DIMENSIONS[key];
+        var value = (raw && raw[key] !== undefined) ? raw[key] : (spec.min + spec.max) / 2;
+        entity[key] = clamp(value, spec.min, spec.max);
       });
       var icon = safeIcon(raw && raw.icon);
       if (icon) { entity.icon = icon; }
@@ -275,6 +323,30 @@ footer a { color: var(--text-secondary); }
     });
     out.sort(function (a, b) { return a.slot - b.slot; });
     return out.length ? out : clone(DEFAULTS);
+  }
+
+  // Three distinct, known dimensions. A stale or hand-edited link can name a
+  // dimension that no longer exists, so anything unusable falls back to the
+  // first key still free.
+  function sanitizeAxes(raw) {
+    var mapping = {};
+    var used = {};
+    ROLES.forEach(function (role) {
+      var choice = raw && raw[role];
+      if (DIM_KEYS.indexOf(choice) === -1 || used[choice]) {
+        choice = DIM_KEYS.filter(function (key) { return !used[key]; })[0];
+      }
+      used[choice] = true;
+      mapping[role] = choice;
+    });
+    return mapping;
+  }
+
+  function roleOf(key) {
+    for (var i = 0; i < ROLES.length; i++) {
+      if (state.axes[ROLES[i]] === key) { return ROLES[i].toUpperCase(); }
+    }
+    return null;
   }
 
   function toast(message) {
@@ -286,22 +358,34 @@ footer a { color: var(--text-secondary); }
 
   // ------------------------------------------------------------------ state
 
+  // A saved or shared chart is {entities, axes}. Older links carried a bare
+  // array of entities, which still reads correctly -- the axis mapping just
+  // falls back to the default.
+  function unpack(raw) {
+    var list = Array.isArray(raw) ? raw : (raw && raw.entities);
+    return { entities: sanitize(list), axes: sanitizeAxes((raw && raw.axes) || DEFAULT_AXES) };
+  }
+
   function readHash() {
     var match = /[#&]d=([^&]+)/.exec(window.location.hash || "");
     if (!match) { return null; }
-    try { return sanitize(JSON.parse(decodeURIComponent(match[1]))); }
+    try { return unpack(JSON.parse(decodeURIComponent(match[1]))); }
     catch (err) { return null; }
   }
 
   function readStore() {
     try {
       var raw = window.localStorage.getItem(STORE_KEY);
-      return raw ? sanitize(JSON.parse(raw)) : null;
+      return raw ? unpack(JSON.parse(raw)) : null;
     } catch (err) { return null; }
   }
 
+  function payload() {
+    return { entities: state.entities, axes: state.axes };
+  }
+
   function save() {
-    try { window.localStorage.setItem(STORE_KEY, JSON.stringify(state.entities)); }
+    try { window.localStorage.setItem(STORE_KEY, JSON.stringify(payload())); }
     catch (err) { /* private browsing -- the chart still works, edits just don't persist */ }
   }
 
@@ -315,49 +399,84 @@ footer a { color: var(--text-secondary); }
 
   // ------------------------------------------------------------------ chart
 
+  function hoverTemplate() {
+    return "<b>%{text}</b><br>"
+      + DIMENSIONS[state.axes.x].label + ": %{x:.1f}<br>"
+      + DIMENSIONS[state.axes.y].label + ": %{y:.1f}<br>"
+      + DIMENSIONS[state.axes.z].label + ": %{z:.1f}"
+      + "<extra></extra>";
+  }
+
   function traces() {
     var out = [];
     var templates = TEMPLATES[state.theme];
+    var map = state.axes;
     if (state.stems && state.entities.length) {
       var stem = clone(templates.stem);
+      var floor = DIMENSIONS[map.z].min;
       state.entities.forEach(function (entity) {
-        stem.x.push(entity.lean, entity.lean, null);
-        stem.y.push(entity.goon, entity.goon, null);
-        stem.z.push(0, entity.prude, null);
+        stem.x.push(entity[map.x], entity[map.x], null);
+        stem.y.push(entity[map.y], entity[map.y], null);
+        stem.z.push(floor, entity[map.z], null);
       });
       out.push(stem);
     }
     state.entities.forEach(function (entity) {
       var trace = clone(templates.point);
-      trace.x = [entity.lean];
-      trace.y = [entity.goon];
-      trace.z = [entity.prude];
+      trace.x = [entity[map.x]];
+      trace.y = [entity[map.y]];
+      trace.z = [entity[map.z]];
       trace.name = entity.name;
       trace.text = [entity.name];
       trace.marker.color = colorFor(entity.slot);
       trace.marker.symbol = symbolFor(entity.slot);
+      trace.hovertemplate = hoverTemplate();
       out.push(trace);
     });
     return out;
   }
 
+  // Three of the pre-styled per-dimension axis specs, dropped into the base
+  // layout. The z spec is the taller variant -- point labels sit above their
+  // markers and need the headroom.
+  function layout() {
+    var base = clone(BASE_LAYOUTS[state.theme]);
+    var specs = AXIS_SPECS[state.theme];
+    base.scene.xaxis = specs.flat[state.axes.x];
+    base.scene.yaxis = specs.flat[state.axes.y];
+    base.scene.zaxis = specs.vertical[state.axes.z];
+    return base;
+  }
+
   function drawChart() {
-    // Both layouts share a uirevision, so redrawing after an edit or a theme
-    // switch leaves the reader's camera exactly where they put it.
-    Plotly.react(gd, traces(), LAYOUTS[state.theme], CONFIG);
+    // Every layout shares a uirevision, so redrawing after an edit, a theme
+    // switch, or an axis swap leaves the camera exactly where the reader put it.
+    Plotly.react(gd, traces(), layout(), CONFIG);
   }
 
   // ------------------------------------------------------------- editor DOM
 
-  function axisRow(entity, axis) {
-    var spec = AXES[axis];
+  function dimensionRow(entity, key) {
+    var spec = DIMENSIONS[key];
     var row = document.createElement("div");
     row.className = "axis-row";
+
     var label = document.createElement("span");
-    label.textContent = spec.label;
+    label.appendChild(document.createTextNode(spec.label));
+    // A dimension that is currently plotted gets its axis letter, so the card
+    // and the cube read as the same thing.
+    var role = roleOf(key);
+    if (role) {
+      var tag = document.createElement("span");
+      tag.className = "role";
+      tag.textContent = role;
+      label.appendChild(document.createTextNode(" "));
+      label.appendChild(tag);
+    }
+
     var value = document.createElement("span");
     value.className = "val";
-    value.textContent = entity[axis].toFixed(1);
+    value.textContent = entity[key].toFixed(1);
     row.appendChild(label);
     row.appendChild(value);
 
@@ -366,18 +485,18 @@ footer a { color: var(--text-secondary); }
     slider.min = spec.min;
     slider.max = spec.max;
     slider.step = 0.5;
-    slider.value = entity[axis];
+    slider.value = entity[key];
     slider.setAttribute("aria-label", entity.name + " " + spec.label);
 
     function paint() {
-      var pct = (entity[axis] - spec.min) / (spec.max - spec.min) * 100;
+      var pct = (entity[key] - spec.min) / (spec.max - spec.min) * 100;
       slider.style.setProperty("--fill", pct.toFixed(1) + "%");
     }
     paint();
 
     slider.addEventListener("input", function () {
-      entity[axis] = parseFloat(slider.value);
-      value.textContent = entity[axis].toFixed(1);
+      entity[key] = parseFloat(slider.value);
+      value.textContent = entity[key].toFixed(1);
       paint();
       drawChart();
       drawTable();
@@ -437,7 +556,7 @@ footer a { color: var(--text-secondary); }
     head.appendChild(name);
     head.appendChild(remove);
     card.appendChild(head);
-    AXIS_KEYS.forEach(function (axis) { card.appendChild(axisRow(entity, axis)); });
+    DIM_KEYS.forEach(function (key) { card.appendChild(dimensionRow(entity, key)); });
     return card;
   }
 
@@ -452,17 +571,30 @@ footer a { color: var(--text-secondary); }
     var table = document.createElement("table");
 
     var caption = document.createElement("caption");
-    caption.textContent = AXES.lean.label + ": " + AXES.lean.hint + " \\u00b7 other axes 0\\u201310";
+    caption.textContent = TABLE_CAPTION;
     table.appendChild(caption);
 
+    // Every dimension is a column, not just the plotted three -- the values you
+    // are not looking at right now still exist and still need to be readable.
     var head = document.createElement("tr");
-    ["Series"].concat(AXIS_KEYS.map(function (axis) { return AXES[axis].label; }))
-      .forEach(function (label) {
-        var cell = document.createElement("th");
-        cell.scope = "col";
-        cell.textContent = label;
-        head.appendChild(cell);
-      });
+    var seriesHead = document.createElement("th");
+    seriesHead.scope = "col";
+    seriesHead.textContent = "Series";
+    head.appendChild(seriesHead);
+    DIM_KEYS.forEach(function (key) {
+      var cell = document.createElement("th");
+      cell.scope = "col";
+      cell.appendChild(document.createTextNode(DIMENSIONS[key].label));
+      var role = roleOf(key);
+      if (role) {
+        var tag = document.createElement("span");
+        tag.className = "role";
+        tag.textContent = role;
+        cell.appendChild(document.createTextNode(" "));
+        cell.appendChild(tag);
+      }
+      head.appendChild(cell);
+    });
     var thead = document.createElement("thead");
     thead.appendChild(head);
     table.appendChild(thead);
@@ -475,9 +607,9 @@ footer a { color: var(--text-secondary); }
       label.appendChild(keyFor(entity));
       label.appendChild(document.createTextNode(entity.name));
       row.appendChild(label);
-      AXIS_KEYS.forEach(function (axis) {
+      DIM_KEYS.forEach(function (key) {
         var cell = document.createElement("td");
-        cell.textContent = entity[axis].toFixed(1);
+        cell.textContent = entity[key].toFixed(1);
         row.appendChild(cell);
       });
       body.appendChild(row);
@@ -488,8 +620,42 @@ footer a { color: var(--text-secondary); }
     tableEl.appendChild(table);
   }
 
+  function drawPickers() {
+    ROLES.forEach(function (role) {
+      var select = document.getElementById("axis-" + role);
+      select.textContent = "";
+      DIM_KEYS.forEach(function (key) {
+        var option = document.createElement("option");
+        option.value = key;
+        option.textContent = DIMENSIONS[key].label;
+        option.selected = state.axes[role] === key;
+        select.appendChild(option);
+      });
+    });
+  }
+
+  // Picking a dimension that is already on another axis swaps the two, rather
+  // than refusing the choice or quietly plotting the same thing twice.
+  function chooseAxis(role, key) {
+    if (DIM_KEYS.indexOf(key) === -1 || state.axes[role] === key) { return; }
+    var previous = state.axes[role];
+    ROLES.forEach(function (other) {
+      if (other !== role && state.axes[other] === key) { state.axes[other] = previous; }
+    });
+    state.axes[role] = key;
+    render();
+    save();
+  }
+
+  ROLES.forEach(function (role) {
+    document.getElementById("axis-" + role).addEventListener("change", function (event) {
+      chooseAxis(role, event.target.value);
+    });
+  });
+
   function render() {
     drawChart();
+    drawPickers();
     drawCards();
     drawTable();
   }
@@ -532,7 +698,11 @@ footer a { color: var(--text-secondary); }
   document.getElementById("add").addEventListener("click", function () {
     if (state.entities.length >= MAX_SLOTS) { return; }
     var slot = nextSlot();
-    state.entities.push({ name: "Series " + (slot + 1), slot: slot, lean: 0, goon: 5, prude: 5 });
+    var fresh = { name: "Series " + (slot + 1), slot: slot };
+    DIM_KEYS.forEach(function (key) {
+      fresh[key] = (DIMENSIONS[key].min + DIMENSIONS[key].max) / 2;
+    });
+    state.entities.push(fresh);
     state.entities.sort(function (a, b) { return a.slot - b.slot; });
     render();
     save();
@@ -540,6 +710,7 @@ footer a { color: var(--text-secondary); }
 
   document.getElementById("reset").addEventListener("click", function () {
     state.entities = clone(DEFAULTS);
+    state.axes = clone(DEFAULT_AXES);
     if (window.location.hash) {
       history.replaceState(null, "", window.location.pathname + window.location.search);
     }
@@ -550,7 +721,7 @@ footer a { color: var(--text-secondary); }
 
   document.getElementById("share").addEventListener("click", function () {
     var url = window.location.origin + window.location.pathname + window.location.search
-      + "#d=" + encodeURIComponent(JSON.stringify(state.entities));
+      + "#d=" + encodeURIComponent(JSON.stringify(payload()));
     history.replaceState(null, "", url);
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(url).then(
@@ -563,8 +734,11 @@ footer a { color: var(--text-secondary); }
   });
 
   document.getElementById("download").addEventListener("click", function () {
-    var payload = JSON.stringify({ axes: AXES, entities: state.entities }, null, 2);
-    var url = URL.createObjectURL(new Blob([payload], { type: "application/json" }));
+    // A complete definition: re-buildable with `python export.py --data`.
+    var text = JSON.stringify(
+      { dimensions: DIMENSIONS, axes: state.axes, entities: state.entities }, null, 2
+    );
+    var url = URL.createObjectURL(new Blob([text], { type: "application/json" }));
     var link = document.createElement("a");
     link.href = url;
     link.download = "chart-data.json";
@@ -579,7 +753,10 @@ footer a { color: var(--text-secondary); }
 
   // A link's values win over this browser's saved edits, which win over the
   // defaults baked in at build time.
-  state.entities = readHash() || readStore() || clone(DEFAULTS);
+  var initial = readHash() || readStore()
+    || { entities: clone(DEFAULTS), axes: clone(DEFAULT_AXES) };
+  state.entities = initial.entities;
+  state.axes = initial.axes;
   state.stems = stemsBox.checked;
   applyTheme(initialTheme());
 })();
@@ -597,17 +774,12 @@ def build_page(
     inline_js: bool = False,
 ) -> str:
     """Render the whole interactive page as a single HTML string."""
-    axes = data["axes"]
-    entities = normalize(data["entities"])
+    dimensions = data["dimensions"]
+    mapping = normalize_axes(data.get("axes"), dimensions)
+    entities = normalize(data["entities"], dimensions)
 
     def dumps(value: Any) -> str:
         return json.dumps(value, cls=plotly.utils.PlotlyJSONEncoder)
-
-    # Layouts carry no data, so one per theme covers every edit the reader makes.
-    layouts = {
-        theme: build_figure([], axes, theme=theme).to_plotly_json()["layout"]
-        for theme in THEME_NAMES
-    }
 
     # An empty subtitle drops the element rather than leaving a blank line
     # under the heading, and the title carries the meta description instead.
@@ -621,8 +793,9 @@ def build_page(
         description=escape(subtitle or title, quote=True),
         footnote=escape(footnote),
         tokens=css(),
-        axes=dumps(axes),
-        axis_keys=dumps(list(AXIS_KEYS)),
+        dimensions=dumps(dimensions),
+        dim_keys=dumps(list(dimensions)),
+        default_axes=dumps(mapping),
         defaults=dumps(entities),
         series=dumps({
             "light": [pair[0] for pair in SERIES],
@@ -631,9 +804,15 @@ def build_page(
         symbols=dumps(SYMBOLS),
         overflow=dumps({theme: THEMES[theme]["overflow"] for theme in THEME_NAMES}),
         max_slots=MAX_SLOTS,
-        layouts=dumps(layouts),
-        templates=dumps({theme: trace_templates(axes, theme) for theme in THEME_NAMES}),
+        # The layout splits in two: the part that never changes, and one
+        # pre-styled axis spec per dimension for the browser to slot in.
+        base_layouts=dumps({theme: base_layout(theme) for theme in THEME_NAMES}),
+        axis_specs=dumps({theme: axis_specs(dimensions, theme) for theme in THEME_NAMES}),
+        templates=dumps({
+            theme: trace_templates(dimensions, mapping, theme) for theme in THEME_NAMES
+        }),
         config=dumps(GRAPH_CONFIG),
+        table_caption=dumps(table_caption(dimensions)),
         plotlyjs=get_plotlyjs() if inline_js else "",
     )
 
