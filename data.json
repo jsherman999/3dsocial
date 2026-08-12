@@ -1,0 +1,31 @@
+{
+  "axes": {
+    "lean": {
+      "label": "political lean",
+      "axis_title": "political lean  (− left · right +)",
+      "hint": "−10 left ↔ +10 right",
+      "min": -10,
+      "max": 10
+    },
+    "goon": {
+      "label": "goonishness",
+      "axis_title": "goonishness  (0 none · 10 total)",
+      "hint": "0 none ↔ 10 total",
+      "min": 0,
+      "max": 10
+    },
+    "prude": {
+      "label": "prudishness",
+      "axis_title": "prudishness  (0 none · 10 total)",
+      "hint": "0 none ↔ 10 total",
+      "min": 0,
+      "max": 10
+    }
+  },
+  "entities": [
+    { "name": "Bluesky", "slot": 0, "lean": -8.0, "goon": 7.5, "prude": 2.0 },
+    { "name": "X",       "slot": 1, "lean":  7.0, "goon": 9.0, "prude": 1.5 },
+    { "name": "TikTok",  "slot": 2, "lean":  4.0, "goon": 4.5, "prude": 8.5 },
+    { "name": "Tumblr",  "slot": 3, "lean": -8.0, "goon": 7.0, "prude": 7.5 }
+  ]
+}

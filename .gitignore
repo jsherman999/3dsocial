@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local export experiments. index.html is committed on purpose -- it is the
+# page GitHub Pages serves.
+offline.html
+chart.html
