@@ -36,7 +36,7 @@ PAGE = Template("""<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${title}</title>
-<meta name="description" content="${subtitle}">
+<meta name="description" content="${description}">
 <style>
 ${tokens}
 * { box-sizing: border-box; }
@@ -132,8 +132,7 @@ footer a { color: var(--text-secondary); }
 <body>
 <div class="wrap">
   <header>
-    <h1>${title}</h1>
-    <p class="sub">${subtitle}</p>
+    <h1>${title}</h1>${subtitle_block}
   </header>
 
   <div class="controls">
@@ -610,9 +609,16 @@ def build_page(
         for theme in THEME_NAMES
     }
 
+    # An empty subtitle drops the element rather than leaving a blank line
+    # under the heading, and the title carries the meta description instead.
+    subtitle_block = (
+        f'\n    <p class="sub">{escape(subtitle)}</p>' if subtitle.strip() else ""
+    )
+
     page = PAGE.substitute(
         title=escape(title),
-        subtitle=escape(subtitle, quote=True),
+        subtitle_block=subtitle_block,
+        description=escape(subtitle or title, quote=True),
         footnote=escape(footnote),
         tokens=css(),
         axes=dumps(axes),
@@ -647,14 +653,8 @@ def main() -> None:
     parser.add_argument("-o", "--out", default="index.html", help="output file (default: index.html)")
     parser.add_argument("--data", default=None, help="chart definition JSON (default: data.json)")
     parser.add_argument("--inline", action="store_true", help="embed plotly.js (~4.8 MB, works offline)")
-    parser.add_argument("--title", default="Prudishness / lean / goonishness")
-    parser.add_argument(
-        "--subtitle",
-        default=(
-            "The 2x2 forces a trade-off that isn't real: a platform can be prudish "
-            "and goonish at the same time. Three independent axes let it be both."
-        ),
-    )
+    parser.add_argument("--title", default="goonish and prudish can happen at same time")
+    parser.add_argument("--subtitle", default="", help="optional line under the heading")
     parser.add_argument("--footnote", default="Values are editable starting points, not measurements.")
     args = parser.parse_args()
 
