@@ -55,6 +55,16 @@ python export.py                 # writes index.html
 
 Pushing to `main` also rebuilds and redeploys it (`.github/workflows/pages.yml`).
 
+### Turning Pages on
+
+One manual step, once: **Settings → Pages → Source: GitHub Actions**. Enabling
+Pages for the first time needs a repo-settings permission the workflow token
+doesn't have, so the workflow can't do it for you — it skips the deploy and
+says so until the switch is flipped.
+
+("Deploy from a branch" → `main` → `/ (root)` works too, since `index.html` is
+committed. You just lose the automatic rebuild from `data.json`.)
+
 Other options:
 
 ```bash

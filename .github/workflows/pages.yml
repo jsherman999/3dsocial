@@ -34,13 +34,26 @@ jobs:
       # always matches data.json even if someone edits it without rerunning.
       - run: python export.py -o index.html
 
-      - uses: actions/configure-pages@v5
+      # Turning Pages on for the first time needs a repo-settings permission the
+      # workflow token doesn't have, so this can't self-enable. Rather than
+      # red-X every push until someone flips the switch, the deploy steps below
+      # sit out until Pages is on. Settings -> Pages -> Source: GitHub Actions.
+      - id: pages
+        uses: actions/configure-pages@v5
+        continue-on-error: true
         with:
           enablement: true
 
-      - uses: actions/upload-pages-artifact@v3
+      - if: steps.pages.outcome != 'success'
+        run: |
+          echo "::notice::Pages is not enabled for this repo, so nothing was deployed."
+          echo "::notice::Enable it at Settings -> Pages -> Source: GitHub Actions, then re-run."
+
+      - if: steps.pages.outcome == 'success'
+        uses: actions/upload-pages-artifact@v3
         with:
           path: .
 
       - id: deployment
+        if: steps.pages.outcome == 'success'
         uses: actions/deploy-pages@v4
